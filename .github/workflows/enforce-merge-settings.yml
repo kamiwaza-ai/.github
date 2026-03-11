@@ -1,0 +1,94 @@
+name: Enforce repo settings
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    environment: governance
+    steps:
+      - uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const desired = {
+              allow_squash_merge: true,
+              allow_merge_commit: false,
+              allow_rebase_merge: false,
+              squash_merge_commit_title: 'PR_TITLE',
+              squash_merge_commit_message: 'PR_BODY',
+              delete_branch_on_merge: true,
+              allow_update_branch: true,
+              has_wiki: false,
+            };
+
+            // Fields not returned by listForOrg — skip idempotency check for these
+            const listOmits = new Set([
+              'squash_merge_commit_title',
+              'squash_merge_commit_message',
+            ]);
+
+            const repos = await github.paginate(
+              github.rest.repos.listForOrg,
+              { org: context.repo.owner, type: 'all', per_page: 100 }
+            );
+
+            let updated = 0;
+            let skipped = 0;
+            let errors = 0;
+            const lines = [];
+
+            for (const repo of repos) {
+              if (repo.archived || repo.fork) {
+                skipped++;
+                continue;
+              }
+
+              // Check fields that listForOrg does return
+              const needsUpdate = Object.entries(desired).some(
+                ([key, val]) => !listOmits.has(key) && repo[key] !== val
+              );
+              if (!needsUpdate) {
+                skipped++;
+                continue;
+              }
+
+              try {
+                await github.rest.repos.update({
+                  owner: context.repo.owner,
+                  repo: repo.name,
+                  ...desired,
+                });
+                updated++;
+                lines.push(`  ${repo.name}: updated`);
+              } catch (e) {
+                core.warning(`Failed to update ${repo.name}: ${e.message}`);
+                errors++;
+                lines.push(`  ${repo.name}: ERROR (${e.status || 'unknown'})`);
+              }
+            }
+
+            const summary = `${updated} updated, ${skipped} skipped, ${errors} errors (${repos.length} total)`;
+            core.info(summary);
+
+            await core.summary
+              .addHeading('Enforce repo settings')
+              .addRaw(`${summary}\n\n`)
+              .addRaw(lines.join('\n'))
+              .write();
+
+            if (errors > 0) {
+              core.setFailed(`${errors} repo(s) failed to update`);
+            }
