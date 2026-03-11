@@ -11,9 +11,16 @@ jobs:
   enforce:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
-          github-token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const desired = {
               allow_squash_merge: true,
@@ -42,7 +49,6 @@ jobs:
                 continue;
               }
 
-              // Idempotency: skip repos already configured correctly
               const needsUpdate = Object.entries(desired).some(
                 ([key, val]) => repo[key] !== val
               );
